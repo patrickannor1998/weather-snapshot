@@ -1,142 +1,208 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import Navbar from './components/Navbar';
+import WeatherHero from './components/WeatherHero';
+import HourlyForecast from './components/HourlyForecast';
+import WeeklyForecast from './components/WeeklyForecast';
+import WeatherMetrics from './components/WeatherMetrics';
+import SavedCities from './components/SavedCities';
+import { fetchWeatherData, getWeatherDetails } from './services/weatherService';
 
-const DEFAULT_CITY = 'London';
+const DEFAULT_LOCATION = {
+  name: 'London',
+  country: 'United Kingdom',
+  lat: 51.5074,
+  lon: -0.1278,
+};
 
 function App() {
-  const [city, setCity] = useState(DEFAULT_CITY);
-  const [submittedCity, setSubmittedCity] = useState(DEFAULT_CITY);
-  const [weather, setWeather] = useState(null);
+  const [location, setLocation] = useState(DEFAULT_LOCATION);
+  const [weatherData, setWeatherData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [unit, setUnit] = useState('C');
+  const [isFavoritesOpen, setIsFavoritesOpen] = useState(false);
 
-  const fetchWeather = async (place) => {
+  // Load saved favorites from localStorage
+  const [favorites, setFavorites] = useState(() => {
+    try {
+      const saved = localStorage.getItem('weather_snapshot_favorites');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  // Sync favorites to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('weather_snapshot_favorites', JSON.stringify(favorites));
+    } catch (e) {
+      console.warn('Could not save favorites to localStorage:', e);
+    }
+  }, [favorites]);
+
+  // Temperature unit conversion helper
+  const convertTemp = useCallback(
+    (celsius) => {
+      if (celsius === null || celsius === undefined) return 0;
+      if (unit === 'F') {
+        return Math.round((celsius * 9) / 5 + 32);
+      }
+      return Math.round(celsius);
+    },
+    [unit]
+  );
+
+  // Fetch weather data for target coordinates
+  const loadWeather = useCallback(async (lat, lon, name, country) => {
     setLoading(true);
     setError('');
 
     try {
-      const response = await fetch(
-        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(place)}&count=1&language=en&format=json`
-      );
+      const data = await fetchWeatherData(lat, lon, name, country);
+      setWeatherData(data);
+      setLocation({ name: data.current.locationName, country: data.current.country, lat, lon });
 
-      if (!response.ok) {
-        throw new Error('Unable to fetch location data.');
-      }
-
-      const geoData = await response.json();
-
-      if (!geoData.results?.length) {
-        throw new Error(`No weather data found for ${place}.`);
-      }
-
-      const { latitude, longitude } = geoData.results[0];
-
-      const weatherResponse = await fetch(
-        `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weathercode&timezone=auto`
-      );
-
-      if (!weatherResponse.ok) {
-        throw new Error('Unable to fetch weather data.');
-      }
-
-      const weatherData = await weatherResponse.json();
-      setWeather({
-        city: place,
-        temperature: weatherData.current.temperature_2m,
-        unit: '°C',
-        description: getWeatherDescription(weatherData.current.weathercode),
-      });
+      // Update dynamic background theme according to weather condition
+      const condition = getWeatherDetails(data.current.weatherCode, data.current.isDay);
+      document.body.className = `theme-${condition.category}`;
     } catch (err) {
-      setWeather(null);
-      setError(err.message || 'Something went wrong.');
+      setError(err.message || 'Unable to retrieve forecast data.');
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    let isMounted = true;
-
-    const loadInitialWeather = async () => {
-      if (!isMounted) return;
-      await fetchWeather(DEFAULT_CITY);
-    };
-
-    loadInitialWeather();
-
-    return () => {
-      isMounted = false;
-    };
   }, []);
 
-  const handleSubmit = (event) => {
-    event.preventDefault();
-    setSubmittedCity(city.trim() || DEFAULT_CITY);
-    fetchWeather(city.trim() || DEFAULT_CITY);
+  // Initial load
+  useEffect(() => {
+    loadWeather(DEFAULT_LOCATION.lat, DEFAULT_LOCATION.lon, DEFAULT_LOCATION.name, DEFAULT_LOCATION.country);
+  }, [loadWeather]);
+
+  // Handle location selection from search or favorites
+  const handleSelectLocation = (lat, lon, name, country) => {
+    loadWeather(lat, lon, name, country);
   };
 
-  const handleRefresh = () => {
-    fetchWeather(submittedCity);
+  // Handle HTML5 Geolocation API
+  const handleUseMyLocation = () => {
+    if (!navigator.geolocation) {
+      alert('Geolocation is not supported by your browser.');
+      return;
+    }
+
+    setLoading(true);
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const { latitude, longitude } = position.coords;
+        await loadWeather(latitude, longitude, 'Your Location', '');
+      },
+      () => {
+        setLoading(false);
+        alert('Unable to access your location. Please check your browser permissions.');
+      }
+    );
+  };
+
+  // Toggle favorite bookmark for current location
+  const isCurrentFavorite = favorites.some(
+    (f) => Math.abs(f.lat - location.lat) < 0.01 && Math.abs(f.lon - location.lon) < 0.01
+  );
+
+  const handleToggleFavorite = () => {
+    if (isCurrentFavorite) {
+      setFavorites(
+        favorites.filter(
+          (f) => !(Math.abs(f.lat - location.lat) < 0.01 && Math.abs(f.lon - location.lon) < 0.01)
+        )
+      );
+    } else {
+      setFavorites([
+        ...favorites,
+        { name: location.name, country: location.country, lat: location.lat, lon: location.lon },
+      ]);
+    }
+  };
+
+  const handleRemoveFavorite = (lat, lon) => {
+    setFavorites(favorites.filter((f) => !(f.lat === lat && f.lon === lon)));
   };
 
   return (
-    <div className="app-shell">
-      <div className="card">
-        <h1>Weather Snapshot</h1>
-        <p className="subtitle">Check the latest forecast from Open-Meteo.</p>
+    <div className="app-container">
+      <div className="ambient-glow-orb" aria-hidden="true" />
 
-        <form onSubmit={handleSubmit} className="search-form">
-          <input
-            value={city}
-            onChange={(event) => setCity(event.target.value)}
-            placeholder="Enter a city"
-          />
-          <button type="submit">Search</button>
-        </form>
+      {/* Navigation Header */}
+      <Navbar
+        onSelectLocation={handleSelectLocation}
+        onUseMyLocation={handleUseMyLocation}
+        unit={unit}
+        onToggleUnit={() => setUnit((prev) => (prev === 'C' ? 'F' : 'C'))}
+        onToggleFavorites={() => setIsFavoritesOpen(true)}
+        favoritesCount={favorites.length}
+      />
 
-        <div className="actions">
-          <button type="button" onClick={handleRefresh} disabled={loading}>
-            Refresh
+      {/* Saved Cities Drawer */}
+      <SavedCities
+        isOpen={isFavoritesOpen}
+        onClose={() => setIsFavoritesOpen(false)}
+        favorites={favorites}
+        onSelectCity={handleSelectLocation}
+        onRemoveFavorite={handleRemoveFavorite}
+      />
+
+      {/* Main Dashboard Layout */}
+      {loading ? (
+        <div className="state-container">
+          <div className="main-spinner" aria-hidden="true" />
+          <p className="state-title">Loading forecast data...</p>
+        </div>
+      ) : error ? (
+        <div className="state-container error-state">
+          <svg className="error-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+          <p className="state-title">{error}</p>
+          <button
+            className="btn-retry"
+            onClick={() => loadWeather(location.lat, location.lon, location.name, location.country)}
+          >
+            Try Again
           </button>
         </div>
+      ) : (
+        weatherData && (
+          <main className="main-content">
+            {/* Top Weather Hero */}
+            <WeatherHero
+              current={weatherData.current}
+              unit={unit}
+              convertTemp={convertTemp}
+              isFavorite={isCurrentFavorite}
+              onToggleFavorite={handleToggleFavorite}
+            />
 
-        {loading && <div className="status">Loading weather...</div>}
-        {error && <div className="status error">{error}</div>}
+            {/* Two-Column Grid for Forecasts & Detailed Metrics */}
+            <div className="content-grid-two-col">
+              <div className="main-column">
+                <HourlyForecast
+                  hourly={weatherData.hourly}
+                  convertTemp={convertTemp}
+                  isDay={weatherData.current.isDay}
+                />
+                <WeatherMetrics current={weatherData.current} />
+              </div>
 
-        {!loading && !error && weather && (
-          <div className="weather-card">
-            <h2>{weather.city}</h2>
-            <p className="temp">{weather.temperature} {weather.unit}</p>
-            <p>{weather.description}</p>
-          </div>
-        )}
-      </div>
+              <div className="side-column">
+                <WeeklyForecast daily={weatherData.daily} convertTemp={convertTemp} />
+              </div>
+            </div>
+          </main>
+        )
+      )}
     </div>
   );
-}
-
-function getWeatherDescription(code) {
-  const descriptions = {
-    0: 'Clear sky',
-    1: 'Mainly clear',
-    2: 'Partly cloudy',
-    3: 'Overcast',
-    45: 'Fog',
-    48: 'Depositing rime fog',
-    51: 'Light drizzle',
-    53: 'Moderate drizzle',
-    55: 'Dense drizzle',
-    61: 'Slight rain',
-    63: 'Moderate rain',
-    65: 'Heavy rain',
-    71: 'Slight snow fall',
-    73: 'Moderate snow fall',
-    75: 'Heavy snow fall',
-    95: 'Thunderstorm',
-    96: 'Thunderstorm with hail',
-    99: 'Thunderstorm with heavy hail',
-  };
-
-  return descriptions[code] || 'Weather conditions available';
 }
 
 export default App;
